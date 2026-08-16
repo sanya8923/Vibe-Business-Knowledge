@@ -1,0 +1,62 @@
+name: Scan for sensitive data
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Diff against previous commit
+        run: |
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff HEAD^ HEAD > diff.txt
+          else
+            git show HEAD > diff.txt
+          fi
+
+      - name: Scan for patterns
+        id: scan
+        run: |
+          PATTERN='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|\+?7[0-9]{10}|8[0-9]{10}|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gsk_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[A-Z0-9]{16}|/Users/[a-zA-Z0-9_-]+|/home/[a-zA-Z0-9_-]+'
+          MATCHES=$(grep -E "$PATTERN" diff.txt | grep '^+' | grep -v '^+++' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            {
+              echo 'matches<<SCANEOF'
+              echo "$MATCHES"
+              echo 'SCANEOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open issue on match
+        if: steps.scan.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATCHES: ${{ steps.scan.outputs.matches }}
+        run: |
+          {
+            echo "Автоматическая проверка нашла подозрительные совпадения в последнем пуше от @${GITHUB_ACTOR}."
+            echo
+            echo "Коммит: ${GITHUB_SHA}"
+            echo
+            echo '```'
+            echo "$MATCHES"
+            echo '```'
+            echo
+            echo "Проверьте и уберите/исправьте, если это реальные личные/финансовые данные или токены. Ложные срабатывания (например, публичный email из открытого источника) можно закрыть без правок."
+          } > issue_body.txt
+          gh issue create \
+            --title "⚠️ Возможная утечка данных в коммите ${GITHUB_SHA:0:7}" \
+            --body-file issue_body.txt

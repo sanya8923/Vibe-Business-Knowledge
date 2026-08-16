@@ -1,0 +1,66 @@
+name: Announce new knowledge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'INDEX.md'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Find newly added rows in INDEX.md
+        id: rows
+        run: |
+          if ! git rev-parse HEAD^ >/dev/null 2>&1; then
+            echo "no_parent=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --unified=0 HEAD^ HEAD -- INDEX.md \
+            | grep -E '^\+\|' \
+            | grep -v '^+++' \
+            | grep -v -- '----' > new_rows.txt || true
+          echo "no_parent=false" >> "$GITHUB_OUTPUT"
+          echo "count=$(wc -l < new_rows.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Create an issue per new topic
+        if: steps.rows.outputs.no_parent != 'true' && steps.rows.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          while IFS= read -r line; do
+            row="${line#+}"
+            IFS='|' read -r _ date author topic file short st _ <<< "$row"
+            date=$(echo "$date" | xargs)
+            author=$(echo "$author" | xargs)
+            topic=$(echo "$topic" | xargs)
+            file=$(echo "$file" | sed -E 's/.*\(([^)]+)\).*/\1/' | xargs)
+            short=$(echo "$short" | xargs)
+            st=$(echo "$st" | xargs)
+
+            # пропускаем заголовок таблицы, если diff случайно его тоже задел
+            [ "$date" = "Дата" ] && continue
+            [ -z "$topic" ] && continue
+
+            url="https://github.com/${REPO}/blob/main/${file}"
+            {
+              echo "**Автор:** ${author}"
+              echo "**Дата:** ${date}"
+              echo "**Статус:** ${st}"
+              echo
+              echo "${short}"
+              echo
+              echo "${url}"
+            } > issue_body.txt
+            gh issue create --title "🆕 ${topic}" --body-file issue_body.txt
+          done < new_rows.txt
